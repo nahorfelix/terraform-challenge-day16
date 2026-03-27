@@ -1,0 +1,12 @@
+# Example backend block — merge into live/<env>/versions.tf after deploying
+# modules/terraform-state with a globally unique bucket name.
+
+terraform {
+  backend "s3" {
+    bucket         = "mycompany-terraform-state-UNIQUE"
+    key            = "day16/dev/webserver-cluster/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
+}

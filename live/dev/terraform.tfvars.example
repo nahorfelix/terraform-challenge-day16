@@ -1,0 +1,27 @@
+# Copy to terraform.tfvars (gitignored) and adjust values.
+# Never commit secrets or account-specific tfvars.
+
+aws_region     = "us-east-1"
+cluster_name   = "day16-web-dev"
+environment    = "dev"
+project_name   = "terraform-30day-challenge"
+team_name      = "platform"
+
+instance_type = "t2.micro"
+min_size      = 1
+max_size      = 2
+server_port   = 8080
+
+enable_autoscaling         = true
+enable_detailed_monitoring = true
+
+use_existing_vpc  = false
+existing_vpc_name = ""
+new_vpc_cidr      = "10.42.0.0/16"
+
+create_dns_record = false
+domain_name       = ""
+route53_zone_name = ""
+
+log_retention_days  = 30
+cpu_alarm_threshold = 80
