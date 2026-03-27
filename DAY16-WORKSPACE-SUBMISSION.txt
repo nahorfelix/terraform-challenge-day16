@@ -1,12 +1,19 @@
 DAY 16 WORKSPACE SUBMISSION — Production-Grade Infrastructure
 ================================================================
+Checklist scoring: PASS = I meet the item. PARTIAL = gap remains; I explain why and next steps below.
 
 1) CHECKLIST AUDIT
-Code: [x] Split modules (vpc/security/alb/asg/iam/logging/monitoring/route53). [x] Typed vars + descriptions. [x] Outputs. [x] No hardcoded resource IDs — vars/locals. [x] locals for common_tags/sizing.
-Reliability: [x] ASG health_check_type=ELB. [x] create_before_destroy LT/SG/ASG. [x] name_prefix. [x] prevent_destroy on state S3+DynamoDB only (not app ASG — intentional).
-Security: [x] No secrets in repo. [~] Remote state: backend commented until bootstrap — fix: apply terraform-state, uncomment backend, migrate. [x] IAM least-privilege logs. [~] ALB :80 from 0.0.0.0/0 — OK for public web lab; prod tighten via WAF/IP allowlists.
-Observability: [x] Tags + CPU alarm + SNS + log retention. [~] No memory/ALB 5xx alarms — add later.
-Maintainability: [x] READMEs, pinned providers, lock file, .gitignore. [~] live uses relative source; prod should use git ?ref= tag per README.
+I audited my repository against the Chapter 8 production checklist.
+
+Code — PASS: Small files (vpc, security, alb, asg, iam, logging, monitoring, route53); typed variables with descriptions; outputs.tf; no hardcoded IDs (vars/locals); common_tags and sizing in locals.
+
+Reliability — PASS: ASG health_check_type=ELB; create_before_destroy on LT/SG/ASG; name_prefix on SGs. prevent_destroy on state S3+DynamoDB only — I did not put it on the app ASG so I can destroy lab stacks; prod might differ by policy.
+
+Security — PARTIAL: No secrets in repo; IAM least-privilege for logs. Gap: remote backend in live/dev still commented until I bootstrap the state module and migrate — then I uncomment backend "s3". Gap: ALB allows 0.0.0.0/0:80 for a public HTTP lab; production would use WAF, IP allowlists, or HTTPS-only patterns.
+
+Observability — PARTIAL: Tags, CPU→SNS, log retention. Gap: no memory or ALB 5xx alarms yet (would add ApplicationELB metrics next).
+
+Maintainability — PARTIAL: READMEs, pinned providers, lock file, .gitignore. Gap: live uses relative module source; for real team delivery I would pin module source to a Git tag per README instead of main.
 
 2) TOP 3 REFACTORS
 (A) Tagging — before: ad-hoc tags per resource. After:
@@ -31,20 +38,17 @@ prevent_destroy on state bucket + lock table: stops accidental destroy of remote
 create_before_destroy on LT/SG/ASG: new resource before delete — without in-place updates, destroys first can cause downtime or dependency errors.
 
 5) CLOUDWATCH ALARM (paste)
-resource aws_cloudwatch_metric_alarm high_cpu {
+resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   count = local.monitoring_enabled ? 1 : 0
-  alarm_name = "${var.cluster_name}-high-cpu"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods = 2
   metric_name = "CPUUtilization"
   namespace = "AWS/EC2"
   period = 120
-  statistic = "Average"
+  evaluation_periods = 2
   threshold = var.cpu_alarm_threshold
   dimensions = { AutoScalingGroupName = aws_autoscaling_group.web.name }
-  alarm_actions = concat([aws_sns_topic.alerts.arn], local.autoscaling_enabled ? [aws_autoscaling_policy.scale_out[0].arn] : [])
+  alarm_actions = concat([aws_sns_topic.alerts.arn], ...)
 }
-Threshold default 80%: two 2-minute periods above 80% = ~4 min sustained load before alarm; avoids flapping. When fired: SNS delivers; optional autoscaling policy adds capacity.
+80% default (~4 min sustained). Fires: SNS + optional scale-out.
 
 6) VALIDATION (2 examples + errors)
 environment: contains(["dev","staging","production"], var.environment) — invalid "qa" → Invalid value for variable — Environment must be dev, staging, or production.
@@ -69,7 +73,7 @@ func TestWebserverCluster(t *testing.T) {
 Deploys fixture (provider) + module stack. Asserts HTTP 200 + Hello World. defer Destroy: teardown after pass/fail — limits cost and name reuse.
 
 8) CHAPTER 8
-New emphasis: operability (alarms, tags) as design requirements. Surprise: “works in dev” still missed remote backend, extra alarms, and version-pinned module sources until checklist audit.
+Operability (alarms, tags) as requirements not extras. Surprise: working dev code still missed backend wiring, extra alarms, and pinned module refs until I audited against the list.
 
 9) CHALLENGES
-No provider in child module → added test/fixtures with provider block. aws_subnets filter used data.aws_vpc.existing[0].id to avoid ordering issues. HCL regex needs \\. for dots. ALB/TG names shortened with substr for 32-char limit.
+Child module has no provider — Terratest fixture wraps it. aws_subnets used vpc id from data source. Regex in validation needs escaped dots. ALB/TG names truncated for AWS length limits.
