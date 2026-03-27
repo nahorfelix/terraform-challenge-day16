@@ -1,0 +1,75 @@
+DAY 16 WORKSPACE SUBMISSION — Production-Grade Infrastructure
+================================================================
+
+1) CHECKLIST AUDIT
+Code: [x] Split modules (vpc/security/alb/asg/iam/logging/monitoring/route53). [x] Typed vars + descriptions. [x] Outputs. [x] No hardcoded resource IDs — vars/locals. [x] locals for common_tags/sizing.
+Reliability: [x] ASG health_check_type=ELB. [x] create_before_destroy LT/SG/ASG. [x] name_prefix. [x] prevent_destroy on state S3+DynamoDB only (not app ASG — intentional).
+Security: [x] No secrets in repo. [~] Remote state: backend commented until bootstrap — fix: apply terraform-state, uncomment backend, migrate. [x] IAM least-privilege logs. [~] ALB :80 from 0.0.0.0/0 — OK for public web lab; prod tighten via WAF/IP allowlists.
+Observability: [x] Tags + CPU alarm + SNS + log retention. [~] No memory/ALB 5xx alarms — add later.
+Maintainability: [x] READMEs, pinned providers, lock file, .gitignore. [~] live uses relative source; prod should use git ?ref= tag per README.
+
+2) TOP 3 REFACTORS
+(A) Tagging — before: ad-hoc tags per resource. After:
+# before
+tags = { Name = "app-vpc" }
+# after
+locals { common_tags = merge({ Environment=var.environment ManagedBy="terraform" Project=var.project_name Owner=var.team_name }, var.additional_tags) }
+tags = merge(local.common_tags, { Name = "${var.cluster_name}-vpc" })
+Fix: one standard for cost/ownership across AWS console and billing.
+
+(B) Health — before: risk of EC2-only checks. After: health_check_type="ELB" + target_group_arns. Fix: unhealthy instances drop out of ALB pool before users see errors.
+
+(C) Ops — before: no alert path. After: aws_sns_topic + aws_cloudwatch_metric_alarm + alarm_actions. Fix: team notified on sustained high CPU (optional + scale-out policy).
+
+3) TAGGING + merge (two resource types)
+locals { common_tags = merge({ Environment=var.environment ManagedBy="terraform" Project=var.project_name Owner=var.team_name }, var.additional_tags) }
+resource aws_vpc: tags = merge(local.common_tags, { Name = "${var.cluster_name}-vpc" })
+resource aws_launch_template tag_specifications: tags = merge(local.common_tags, { Name = "${var.cluster_name}-instance" })
+
+4) LIFECYCLE
+prevent_destroy on state bucket + lock table: stops accidental destroy of remote state — without it, deleted state = lost infra map and possible prolonged outage.
+create_before_destroy on LT/SG/ASG: new resource before delete — without in-place updates, destroys first can cause downtime or dependency errors.
+
+5) CLOUDWATCH ALARM (paste)
+resource aws_cloudwatch_metric_alarm high_cpu {
+  count = local.monitoring_enabled ? 1 : 0
+  alarm_name = "${var.cluster_name}-high-cpu"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods = 2
+  metric_name = "CPUUtilization"
+  namespace = "AWS/EC2"
+  period = 120
+  statistic = "Average"
+  threshold = var.cpu_alarm_threshold
+  dimensions = { AutoScalingGroupName = aws_autoscaling_group.web.name }
+  alarm_actions = concat([aws_sns_topic.alerts.arn], local.autoscaling_enabled ? [aws_autoscaling_policy.scale_out[0].arn] : [])
+}
+Threshold default 80%: two 2-minute periods above 80% = ~4 min sustained load before alarm; avoids flapping. When fired: SNS delivers; optional autoscaling policy adds capacity.
+
+6) VALIDATION (2 examples + errors)
+environment: contains(["dev","staging","production"], var.environment) — invalid "qa" → Invalid value for variable — Environment must be dev, staging, or production.
+instance_type: regex t2/t3 sizes — "m5.large" → instance_type must be a t2 or t3 family size (e.g. t2.micro, t3.small).
+
+7) TERRATEST (test function)
+func TestWebserverCluster(t *testing.T) {
+  t.Parallel()
+  terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
+    TerraformDir: "./fixtures/webserver-cluster",
+    Vars: map[string]interface{}{
+      "cluster_name":"test-cluster","project_name":"terratest","team_name":"platform",
+      "instance_type":"t2.micro","min_size":1,"max_size":2,"environment":"dev",
+      "enable_detailed_monitoring":false,
+    },
+  })
+  defer terraform.Destroy(t, terraformOptions)
+  terraform.InitAndApply(t, terraformOptions)
+  albDns := terraform.Output(t, terraformOptions, "alb_dns_name")
+  http_helper.HttpGetWithRetry(t, "http://"+albDns, nil, 200, "Hello World", 30, 10*time.Second)
+}
+Deploys fixture (provider) + module stack. Asserts HTTP 200 + Hello World. defer Destroy: teardown after pass/fail — limits cost and name reuse.
+
+8) CHAPTER 8
+New emphasis: operability (alarms, tags) as design requirements. Surprise: “works in dev” still missed remote backend, extra alarms, and version-pinned module sources until checklist audit.
+
+9) CHALLENGES
+No provider in child module → added test/fixtures with provider block. aws_subnets filter used data.aws_vpc.existing[0].id to avoid ordering issues. HCL regex needs \\. for dots. ALB/TG names shortened with substr for 32-char limit.
